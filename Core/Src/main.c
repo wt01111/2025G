@@ -46,8 +46,10 @@
 #define SWEEP_LOW_CYCLES           (10U)
 #define SWEEP_MID_CYCLES           (20U)
 #define SWEEP_HIGH_CYCLES          (50U)
+#define SWEEP_TOP_CYCLES           (100U)
 #define SWEEP_LOW_BAND_HZ          (5000U)
 #define SWEEP_MID_BAND_HZ          (20000U)
+#define SWEEP_TOP_BAND_HZ          (96000U)
 #define SWEEP_SETTLE_RECORDS       (2U)
 #define SWEEP_ADC_TOTAL_SAMPLES    (SWEEP_SAMPLES * (SWEEP_SETTLE_RECORDS + 1U))
 #define SWEEP_START_HZ             (1000U)
@@ -525,6 +527,10 @@ static float sweep_config_timer_for_freq(uint32_t target_freq_hz)
 
 static uint32_t sweep_select_cycles(uint32_t target_freq_hz)
 {
+  if (target_freq_hz >= SWEEP_TOP_BAND_HZ)
+  {
+    return SWEEP_TOP_CYCLES;
+  }
   if (target_freq_hz <= SWEEP_LOW_BAND_HZ)
   {
     return SWEEP_LOW_CYCLES;

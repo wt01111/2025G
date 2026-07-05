@@ -499,6 +499,41 @@
           </Files>
         </Group>
         <Group>
+          <GroupName>Application/User/App</GroupName>
+          <Files>
+            <File>
+              <FileName>rlc_app.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../Core/App/rlc_app.c</FilePath>
+            </File>
+            <File>
+              <FileName>rlc_app.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>../Core/App/rlc_app.h</FilePath>
+            </File>
+            <File>
+              <FileName>rlc_display.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../Core/App/rlc_display.c</FilePath>
+            </File>
+            <File>
+              <FileName>rlc_display.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>../Core/App/rlc_display.h</FilePath>
+            </File>
+            <File>
+              <FileName>rlc_filter.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../Core/App/rlc_filter.c</FilePath>
+            </File>
+            <File>
+              <FileName>rlc_filter.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>../Core/App/rlc_filter.h</FilePath>
+            </File>
+          </Files>
+        </Group>
+        <Group>
           <GroupName>Drivers/STM32H7xx_HAL_Driver</GroupName>
           <Files>
             <File>

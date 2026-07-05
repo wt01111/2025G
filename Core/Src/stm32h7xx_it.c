@@ -59,6 +59,7 @@ extern DMA_HandleTypeDef hdma_adc1;
 extern DMA_HandleTypeDef hdma_dac1_ch1;
 /* USER CODE BEGIN EV */
 extern UART_HandleTypeDef huart1;
+extern UART_HandleTypeDef huart3;
 
 /* USER CODE END EV */
 
@@ -232,6 +233,11 @@ void DMA1_Stream1_IRQHandler(void)
 void USART1_IRQHandler(void)
 {
   HAL_UART_IRQHandler(&huart1);
+}
+
+void USART3_IRQHandler(void)
+{
+  HAL_UART_IRQHandler(&huart3);
 }
 
 /* USER CODE END 1 */

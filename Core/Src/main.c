@@ -68,6 +68,12 @@
 #define FIT_MODEL_HIGHPASS         (2U)
 #define UART1_CMD_START2           "Start_2"
 #define UART1_CMD_START2_LEN       (7U)
+#define SCREEN_CMD_LEARN           "start_learn"
+#define SCREEN_CMD_LEARN_LEN       (11U)
+#define SCREEN_CMD_FILTER          "start_filter"
+#define SCREEN_CMD_FILTER_LEN      (12U)
+#define SCREEN_MAG_DB_MIN          (-40.0f)
+#define SCREEN_MAG_DB_MAX          (0.0f)
 #define IIR_SAMPLE_RATE_HZ         (1800000U)
 #define IIR_BLOCK_SAMPLES          (512U)
 #define IIR_DMA_SAMPLES            (IIR_BLOCK_SAMPLES * 2U)
@@ -103,6 +109,11 @@ static uint32_t fit_count;
 static uint8_t uart1_rx_byte;
 static volatile uint8_t uart1_start2_requested;
 static uint8_t uart1_start2_match;
+static uint8_t screen_rx_byte;
+static volatile uint8_t screen_start_learn_requested;
+static volatile uint8_t screen_start_filter_requested;
+static uint8_t screen_learn_match;
+static uint8_t screen_filter_match;
 static volatile uint8_t uart_print_enabled = 1U;
 static uint16_t iir_adc_buf[IIR_DMA_SAMPLES] ADC_DMA_ATTR;
 static uint16_t iir_dac_buf[IIR_DMA_SAMPLES] DAC_DMA_ATTR;
@@ -126,6 +137,8 @@ static float fit_n0;
 static float fit_a;
 static float fit_b;
 static uint8_t fit_system_valid;
+static uint32_t fit_model = FIT_MODEL_BANDPASS;
+static uint8_t fit_model_valid;
 static float iir_b0;
 static float iir_b1;
 static float iir_b2;
@@ -165,9 +178,19 @@ static void sweep_fit_store(float mag, float phase_deg, uint32_t freq_hz);
 static void sweep_fit_rlc_and_print(void);
 static float sweep_rlc_mag_base(uint32_t model, float freq_hz, float f0_hz, float q);
 static float sweep_rlc_phase_deg(uint32_t model, float freq_hz, float f0_hz, float q);
+static const char *sweep_model_text(uint32_t model);
 static void sweep_uart_print_model(uint32_t model);
 static float sweep_unwrap_phase(float phase_deg, float last_phase_deg);
 static void uart1_cmd_rx_start(void);
+static void screen_uart_rx_start(void);
+static void screen_match_byte(uint8_t value);
+static void screen_send_raw(const char *text);
+static void screen_send_end(void);
+static void screen_send_uint(uint32_t value);
+static void screen_send_curve(uint32_t channel, uint32_t value);
+static uint32_t screen_scale_mag(float mag);
+static uint32_t screen_scale_phase(float phase_deg);
+static void screen_send_filter_type(uint32_t model);
 static void iir_start_from_fit(void);
 static void iir_config_timer(void);
 static uint8_t iir_make_coefficients(void);
@@ -181,7 +204,6 @@ static void sweep_uart_puts(const char *text);
 static void sweep_uart_print_uint(uint32_t value);
 static void sweep_uart_print_fixed(float value, uint32_t scale);
 static void sweep_uart_print_sci(float value);
-static void sweep_uart_print_line(float mag, float phase_deg, uint32_t freq_hz);
 static float sweep_sinf(float x);
 static float sweep_cosf(float x);
 static float sweep_sqrtf(float x);
@@ -241,9 +263,9 @@ int main(void)
     Error_Handler();
   }
   uart_print_enabled = 1U;
-  sweep_run_once();
   uart1_cmd_rx_start();
-  sweep_uart_puts("CMD_READY,Start_2\r\n");
+  screen_uart_rx_start();
+  sweep_uart_puts("CMD_READY,start_learn,start_filter\r\n");
 
   /* USER CODE END 2 */
 
@@ -254,9 +276,28 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    if ((uart1_start2_requested != 0U) && (iir_running == 0U))
+    if (screen_start_learn_requested != 0U)
     {
+      screen_start_learn_requested = 0U;
+      if (iir_running != 0U)
+      {
+        HAL_TIM_Base_Stop(&htim2);
+        HAL_ADC_Stop_DMA(&hadc1);
+        HAL_DAC_Stop_DMA(&hdac1, DAC_CHANNEL_1);
+        iir_running = 0U;
+      }
+      uart_print_enabled = 1U;
+      sweep_run_once();
+    }
+
+    if (((screen_start_filter_requested != 0U) || (uart1_start2_requested != 0U)) && (iir_running == 0U))
+    {
+      screen_start_filter_requested = 0U;
       uart1_start2_requested = 0U;
+      if (fit_model_valid != 0U)
+      {
+        screen_send_filter_type(fit_model);
+      }
       uart_print_enabled = 1U;
       iir_start_from_fit();
       if (iir_running != 0U)
@@ -354,6 +395,121 @@ static uint32_t sweep_strlen(const char *text)
   }
 
   return len;
+}
+
+static void screen_send_raw(const char *text)
+{
+  HAL_UART_Transmit(&huart3, (uint8_t *)text, (uint16_t)sweep_strlen(text), HAL_MAX_DELAY);
+}
+
+static void screen_send_end(void)
+{
+  static const uint8_t end_bytes[3] = {0xFFU, 0xFFU, 0xFFU};
+
+  HAL_UART_Transmit(&huart3, (uint8_t *)end_bytes, sizeof(end_bytes), HAL_MAX_DELAY);
+}
+
+static void screen_send_uint(uint32_t value)
+{
+  char text[11];
+  uint32_t index = 0U;
+
+  if (value == 0U)
+  {
+    screen_send_raw("0");
+    return;
+  }
+
+  while ((value > 0U) && (index < sizeof(text)))
+  {
+    text[index++] = (char)('0' + (value % 10U));
+    value /= 10U;
+  }
+
+  while (index > 0U)
+  {
+    index--;
+    HAL_UART_Transmit(&huart3, (uint8_t *)&text[index], 1U, HAL_MAX_DELAY);
+  }
+}
+
+static void screen_send_curve(uint32_t channel, uint32_t value)
+{
+  screen_send_raw("add 3,");
+  screen_send_uint(channel);
+  screen_send_raw(",");
+  screen_send_uint(value);
+  screen_send_end();
+}
+
+static uint32_t screen_scale_mag(float mag)
+{
+  float db;
+  float scaled;
+
+  if (mag <= 1.0e-6f)
+  {
+    db = SCREEN_MAG_DB_MIN;
+  }
+  else
+  {
+    db = 20.0f * log10f(mag);
+  }
+
+  if (db < SCREEN_MAG_DB_MIN)
+  {
+    db = SCREEN_MAG_DB_MIN;
+  }
+  if (db > SCREEN_MAG_DB_MAX)
+  {
+    db = SCREEN_MAG_DB_MAX;
+  }
+
+  scaled = ((db - SCREEN_MAG_DB_MIN) * 100.0f) / (SCREEN_MAG_DB_MAX - SCREEN_MAG_DB_MIN);
+  if (scaled < 0.0f)
+  {
+    scaled = 0.0f;
+  }
+  if (scaled > 100.0f)
+  {
+    scaled = 100.0f;
+  }
+
+  return (uint32_t)(scaled + 0.5f);
+}
+
+static uint32_t screen_scale_phase(float phase_deg)
+{
+  float scaled;
+
+  while (phase_deg > 180.0f)
+  {
+    phase_deg -= 360.0f;
+  }
+  while (phase_deg < -180.0f)
+  {
+    phase_deg += 360.0f;
+  }
+
+  scaled = ((phase_deg + 180.0f) * 100.0f) / 360.0f;
+  if (scaled < 0.0f)
+  {
+    scaled = 0.0f;
+  }
+  if (scaled > 100.0f)
+  {
+    scaled = 100.0f;
+  }
+
+  return (uint32_t)(scaled + 0.5f);
+}
+
+static void screen_send_filter_type(uint32_t model)
+{
+  screen_send_raw("t0.txt=\"");
+  screen_send_raw(sweep_model_text(model));
+  screen_send_raw("\"");
+  screen_send_end();
 }
 
 static void sweep_uart_print_uint(uint32_t value)
@@ -474,27 +630,6 @@ static void sweep_uart_print_sci(float value)
     sweep_uart_puts("e-");
     sweep_uart_print_uint((uint32_t)(-exp));
   }
-#endif
-}
-
-static void sweep_uart_print_line(float mag, float phase_deg, uint32_t freq_hz)
-{
-#if (IIR_UART_PRINT_ENABLE == 0U)
-  (void)mag;
-  (void)phase_deg;
-  (void)freq_hz;
-  return;
-#else
-  if (uart_print_enabled == 0U)
-  {
-    return;
-  }
-  sweep_uart_print_fixed(mag, 1000000U);
-  sweep_uart_puts(",");
-  sweep_uart_print_fixed(phase_deg, 100U);
-  sweep_uart_puts(",");
-  sweep_uart_print_uint(freq_hz);
-  sweep_uart_puts("\r\n");
 #endif
 }
 
@@ -670,7 +805,7 @@ static void sweep_run_once(void)
   uint32_t last_freq_hz = 0U;
 
   fit_count = 0U;
-  sweep_uart_puts("mag,phase_deg,freq_hz\r\n");
+  fit_model_valid = 0U;
 
   for (uint32_t target_freq_hz = SWEEP_START_HZ; target_freq_hz <= SWEEP_END_HZ; target_freq_hz += SWEEP_STEP_HZ)
   {
@@ -763,7 +898,8 @@ static void sweep_run_once(void)
         SCB_InvalidateDCache_by_Addr((uint32_t *)adc_buf, (int32_t)sizeof(adc_buf));
       }
       sweep_analyze(&mag, &phase_deg);
-      sweep_uart_print_line(mag, phase_deg, freq_hz);
+      screen_send_curve(0U, screen_scale_mag(mag));
+      screen_send_curve(1U, screen_scale_phase(phase_deg));
       sweep_fit_store(mag, phase_deg, freq_hz);
     }
 
@@ -834,20 +970,22 @@ static float sweep_rlc_phase_deg(uint32_t model, float freq_hz, float f0_hz, flo
   return num_phase_deg - (sweep_atan2f(imag, real) * 180.0f / PI_F);
 }
 
-static void sweep_uart_print_model(uint32_t model)
+static const char *sweep_model_text(uint32_t model)
 {
   if (model == FIT_MODEL_LOWPASS)
   {
-    sweep_uart_puts("LOWPASS");
+    return "LOWPASS";
   }
-  else if (model == FIT_MODEL_HIGHPASS)
+  if (model == FIT_MODEL_HIGHPASS)
   {
-    sweep_uart_puts("HIGHPASS");
+    return "HIGHPASS";
   }
-  else
-  {
-    sweep_uart_puts("BANDPASS");
-  }
+  return "BANDPASS";
+}
+
+static void sweep_uart_print_model(uint32_t model)
+{
+  sweep_uart_puts(sweep_model_text(model));
 }
 
 static float sweep_unwrap_phase(float phase_deg, float last_phase_deg)
@@ -1031,6 +1169,10 @@ static void sweep_fit_rlc_and_print(void)
     float b = w0 * w0;
     uint32_t used = 0U;
 
+    fit_model = best_model;
+    fit_model_valid = 1U;
+    screen_send_filter_type(best_model);
+
     for (uint32_t i = 0; i < fit_count; i++)
     {
       float unwrapped = sweep_unwrap_phase(fit_phase_deg[i], last_phase);
@@ -1150,6 +1292,54 @@ static void uart1_cmd_rx_start(void)
   HAL_NVIC_SetPriority(USART1_IRQn, 1, 0);
   HAL_NVIC_EnableIRQ(USART1_IRQn);
   (void)HAL_UART_Receive_IT(&huart1, &uart1_rx_byte, 1U);
+}
+
+static void screen_uart_rx_start(void)
+{
+  screen_learn_match = 0U;
+  screen_filter_match = 0U;
+  screen_start_learn_requested = 0U;
+  screen_start_filter_requested = 0U;
+  (void)HAL_UART_AbortReceive(&huart3);
+  __HAL_UART_CLEAR_FLAG(&huart3, UART_CLEAR_OREF | UART_CLEAR_NEF | UART_CLEAR_FEF | UART_CLEAR_PEF);
+  __HAL_UART_SEND_REQ(&huart3, UART_RXDATA_FLUSH_REQUEST);
+  HAL_NVIC_SetPriority(USART3_IRQn, 1, 0);
+  HAL_NVIC_EnableIRQ(USART3_IRQn);
+  (void)HAL_UART_Receive_IT(&huart3, &screen_rx_byte, 1U);
+}
+
+static void screen_match_byte(uint8_t value)
+{
+  const char *learn = SCREEN_CMD_LEARN;
+  const char *filter = SCREEN_CMD_FILTER;
+
+  if (value == (uint8_t)learn[screen_learn_match])
+  {
+    screen_learn_match++;
+    if (screen_learn_match >= SCREEN_CMD_LEARN_LEN)
+    {
+      screen_start_learn_requested = 1U;
+      screen_learn_match = 0U;
+    }
+  }
+  else
+  {
+    screen_learn_match = (value == (uint8_t)learn[0]) ? 1U : 0U;
+  }
+
+  if (value == (uint8_t)filter[screen_filter_match])
+  {
+    screen_filter_match++;
+    if (screen_filter_match >= SCREEN_CMD_FILTER_LEN)
+    {
+      screen_start_filter_requested = 1U;
+      screen_filter_match = 0U;
+    }
+  }
+  else
+  {
+    screen_filter_match = (value == (uint8_t)filter[0]) ? 1U : 0U;
+  }
 }
 
 static void iir_config_timer(void)
@@ -1720,6 +1910,12 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 
     (void)HAL_UART_Receive_IT(&huart1, &uart1_rx_byte, 1U);
   }
+  else if (huart->Instance == USART3)
+  {
+    (void)HAL_UART_Transmit(&huart1, &screen_rx_byte, 1U, 1U);
+    screen_match_byte(screen_rx_byte);
+    (void)HAL_UART_Receive_IT(&huart3, &screen_rx_byte, 1U);
+  }
 }
 
 void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
@@ -1729,6 +1925,12 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
     __HAL_UART_CLEAR_FLAG(huart, UART_CLEAR_OREF | UART_CLEAR_NEF | UART_CLEAR_FEF | UART_CLEAR_PEF);
     __HAL_UART_SEND_REQ(huart, UART_RXDATA_FLUSH_REQUEST);
     (void)HAL_UART_Receive_IT(&huart1, &uart1_rx_byte, 1U);
+  }
+  else if (huart->Instance == USART3)
+  {
+    __HAL_UART_CLEAR_FLAG(huart, UART_CLEAR_OREF | UART_CLEAR_NEF | UART_CLEAR_FEF | UART_CLEAR_PEF);
+    __HAL_UART_SEND_REQ(huart, UART_RXDATA_FLUSH_REQUEST);
+    (void)HAL_UART_Receive_IT(&huart3, &screen_rx_byte, 1U);
   }
 }
 

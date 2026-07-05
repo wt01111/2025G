@@ -68,10 +68,10 @@
 #define FIT_MODEL_HIGHPASS         (2U)
 #define UART1_CMD_START2           "Start_2"
 #define UART1_CMD_START2_LEN       (7U)
-#define IIR_SAMPLE_RATE_HZ         (2500000U)
+#define IIR_SAMPLE_RATE_HZ         (1000000U)
 #define IIR_BLOCK_SAMPLES          (512U)
 #define IIR_DMA_SAMPLES            (IIR_BLOCK_SAMPLES * 2U)
-#define IIR_USE_FMAC               (1U)
+#define IIR_USE_FMAC               (0U)
 #define IIR_DEBUG_ADC_TO_DAC       (0U)
 #define IIR_DEBUG_REPORT_BLOCKS    (1000U)
 #define IIR_UART_PRINT_ENABLE      (1U)
@@ -181,6 +181,7 @@ static uint16_t iir_float_to_dac(float value);
 static int16_t iir_float_to_fmac_q15(float value);
 static uint8_t iir_fmac_configure_from_coefficients(void);
 static uint8_t iir_fmac_process_block(uint32_t offset);
+static void uart1_force_puts(const char *text);
 static void sweep_uart_puts(const char *text);
 static void sweep_uart_print_uint(uint32_t value);
 static void sweep_uart_print_fixed(float value, uint32_t scale);
@@ -261,9 +262,15 @@ int main(void)
     if ((uart1_start2_requested != 0U) && (iir_running == 0U))
     {
       uart1_start2_requested = 0U;
-      uart_print_enabled = 0U;
-      sweep_uart_puts("CMD_START_2\r\n");
+      uart_print_enabled = 1U;
+      uart1_force_puts("CMD_START_2\r\n");
+      iir_load_fixed_coefficients();
       iir_start_from_fit();
+      if (iir_running != 0U)
+      {
+        uart1_force_puts("IIR_RUNNING\r\n");
+        uart_print_enabled = 0U;
+      }
     }
 
     iir_process_pending();
@@ -331,6 +338,11 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
+static void uart1_force_puts(const char *text)
+{
+  HAL_UART_Transmit(&huart1, (uint8_t *)text, (uint16_t)sweep_strlen(text), HAL_MAX_DELAY);
+}
+
 static void sweep_uart_puts(const char *text)
 {
 #if (IIR_UART_PRINT_ENABLE == 0U)
@@ -1225,11 +1237,11 @@ static uint8_t iir_make_coefficients(void)
 
 static void iir_load_fixed_coefficients(void)
 {
-  iir_b0 = 1.109647e-1f;
+  iir_b0 = 3.084963e-2f;
   iir_b1 = 0.0f;
-  iir_b2 = -1.109647e-1f;
-  iir_a1 = -1.724141f;
-  iir_a2 = 7.585034e-1f;
+  iir_b2 = -3.084963e-2f;
+  iir_a1 = -1.929627f;
+  iir_a2 = 9.321554e-1f;
   iir_coeffs[0] = iir_b0;
   iir_coeffs[1] = iir_b1;
   iir_coeffs[2] = iir_b2;
@@ -1426,8 +1438,10 @@ static void iir_start_from_fit(void)
   sweep_uart_puts("\r\n");
 #if (IIR_DEBUG_ADC_TO_DAC != 0U)
   sweep_uart_puts("IIR_MODE,ADC_TO_DAC_DEBUG\r\n");
+#elif (IIR_USE_FMAC != 0U)
+  sweep_uart_puts("IIR_MODE,FMAC_IIR_FIXED\r\n");
 #else
-  sweep_uart_puts("IIR_MODE,SOFTWARE_IIR\r\n");
+  sweep_uart_puts("IIR_MODE,SOFTWARE_IIR_FIXED\r\n");
 #endif
 
   sweep_uart_puts("IIR_DAC_STATE,cr,");
@@ -1520,6 +1534,10 @@ static uint8_t iir_fmac_configure_from_coefficients(void)
   iir_fmac_coeff_b[2] = iir_float_to_fmac_q15(iir_b2);
   iir_fmac_coeff_a[0] = iir_float_to_fmac_q15(-iir_a1);
   iir_fmac_coeff_a[1] = iir_float_to_fmac_q15(-iir_a2);
+  if (iir_fmac_coeff_clipped != 0U)
+  {
+    return 0U;
+  }
 
   iir_fmac_zero[0] = 0;
   iir_fmac_zero[1] = 0;

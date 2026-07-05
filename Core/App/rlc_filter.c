@@ -40,6 +40,7 @@
 #define IIR_DMA_SAMPLES            (IIR_BLOCK_SAMPLES * 2U)
 #define IIR_USE_FMAC               (0U)
 #define IIR_DEBUG_ADC_TO_DAC       (0U)
+#define IIR_OUTPUT_GAIN            (0.8f)
 #define IIR_FMAC_COEFF_B_SIZE      (3U)
 #define IIR_FMAC_COEFF_A_SIZE      (2U)
 #define PI_F                       (3.14159265358979323846f)
@@ -122,6 +123,7 @@ static void iir_config_timer(void);
 static uint8_t iir_make_coefficients(void);
 static void iir_process_pending(void);
 static void iir_process_block(uint32_t offset);
+static uint16_t iir_apply_output_gain(uint16_t sample);
 static uint16_t iir_float_to_dac(float value);
 static int16_t iir_float_to_fmac_q15(float value);
 static uint8_t iir_fmac_configure_from_coefficients(void);
@@ -1102,9 +1104,25 @@ static void iir_process_pending(void)
   __enable_irq();
 }
 
+static uint16_t iir_apply_output_gain(uint16_t sample)
+{
+  float dac = 2048.0f + (((float)sample - 2048.0f) * IIR_OUTPUT_GAIN);
+
+  if (dac < 0.0f)
+  {
+    dac = 0.0f;
+  }
+  else if (dac > 4095.0f)
+  {
+    dac = 4095.0f;
+  }
+
+  return (uint16_t)(dac + 0.5f);
+}
+
 static uint16_t iir_float_to_dac(float value)
 {
-  float dac = 2048.0f + (value * 2047.0f);
+  float dac = 2048.0f + (value * 2047.0f * IIR_OUTPUT_GAIN);
 
   if (dac < 0.0f)
   {
@@ -1278,6 +1296,7 @@ static void iir_process_block(uint32_t offset)
     {
       dac_sample = 4095U;
     }
+    dac_sample = iir_apply_output_gain(dac_sample);
     if (dac_sample < dac_min)
     {
       dac_min = dac_sample;
@@ -1308,6 +1327,7 @@ static void iir_process_block(uint32_t offset)
       {
         dac_sample = (uint16_t)dac_value;
       }
+      dac_sample = iir_apply_output_gain(dac_sample);
 
       if (dac_sample < dac_min)
       {

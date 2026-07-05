@@ -73,7 +73,6 @@
 #define IIR_DMA_SAMPLES            (IIR_BLOCK_SAMPLES * 2U)
 #define IIR_USE_FMAC               (0U)
 #define IIR_DEBUG_ADC_TO_DAC       (0U)
-#define IIR_DEBUG_REPORT_BLOCKS    (1000U)
 #define IIR_UART_PRINT_ENABLE      (1U)
 #define IIR_FMAC_COEFF_B_SIZE      (3U)
 #define IIR_FMAC_COEFF_A_SIZE      (2U)
@@ -117,7 +116,6 @@ static volatile uint32_t iir_dac_full_irq_count;
 static volatile uint32_t iir_dac_error_count;
 static volatile uint32_t iir_fmac_error_count;
 static uint32_t iir_processed_count;
-static uint32_t iir_next_debug_count;
 static uint16_t iir_adc_min;
 static uint16_t iir_adc_max;
 static uint16_t iir_dac_min;
@@ -171,17 +169,14 @@ static void sweep_uart_print_model(uint32_t model);
 static float sweep_unwrap_phase(float phase_deg, float last_phase_deg);
 static void uart1_cmd_rx_start(void);
 static void iir_start_from_fit(void);
-static void iir_load_fixed_coefficients(void);
 static void iir_config_timer(void);
 static uint8_t iir_make_coefficients(void);
 static void iir_process_pending(void);
 static void iir_process_block(uint32_t offset);
-static void iir_debug_report_once(void);
 static uint16_t iir_float_to_dac(float value);
 static int16_t iir_float_to_fmac_q15(float value);
 static uint8_t iir_fmac_configure_from_coefficients(void);
 static uint8_t iir_fmac_process_block(uint32_t offset);
-static void uart1_force_puts(const char *text);
 static void sweep_uart_puts(const char *text);
 static void sweep_uart_print_uint(uint32_t value);
 static void sweep_uart_print_fixed(float value, uint32_t scale);
@@ -263,12 +258,9 @@ int main(void)
     {
       uart1_start2_requested = 0U;
       uart_print_enabled = 1U;
-      uart1_force_puts("CMD_START_2\r\n");
-      iir_load_fixed_coefficients();
       iir_start_from_fit();
       if (iir_running != 0U)
       {
-        uart1_force_puts("IIR_RUNNING\r\n");
         uart_print_enabled = 0U;
       }
     }
@@ -338,11 +330,6 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
-static void uart1_force_puts(const char *text)
-{
-  HAL_UART_Transmit(&huart1, (uint8_t *)text, (uint16_t)sweep_strlen(text), HAL_MAX_DELAY);
-}
-
 static void sweep_uart_puts(const char *text)
 {
 #if (IIR_UART_PRINT_ENABLE == 0U)
@@ -1235,34 +1222,6 @@ static uint8_t iir_make_coefficients(void)
   return 1U;
 }
 
-static void iir_load_fixed_coefficients(void)
-{
-  iir_b0 = 3.084963e-2f;
-  iir_b1 = 0.0f;
-  iir_b2 = -3.084963e-2f;
-  iir_a1 = -1.929627f;
-  iir_a2 = 9.321554e-1f;
-  iir_coeffs[0] = iir_b0;
-  iir_coeffs[1] = iir_b1;
-  iir_coeffs[2] = iir_b2;
-  iir_coeffs[3] = -iir_a1;
-  iir_coeffs[4] = -iir_a2;
-  arm_biquad_cascade_df1_init_f32(&iir_biquad, 1U, iir_coeffs, iir_state);
-  iir_coeff_valid = 1U;
-
-  sweep_uart_puts("IIR_FIXED_COEFF,b0,");
-  sweep_uart_print_sci(iir_b0);
-  sweep_uart_puts(",b1,");
-  sweep_uart_print_sci(iir_b1);
-  sweep_uart_puts(",b2,");
-  sweep_uart_print_sci(iir_b2);
-  sweep_uart_puts(",a1,");
-  sweep_uart_print_sci(iir_a1);
-  sweep_uart_puts(",a2,");
-  sweep_uart_print_sci(iir_a2);
-  sweep_uart_puts("\r\n");
-}
-
 __WEAK void arm_biquad_cascade_df1_init_f32(arm_biquad_casd_df1_inst_f32 *S,
                                             uint8_t numStages,
                                             const float32_t *pCoeffs,
@@ -1319,7 +1278,6 @@ __WEAK void arm_biquad_cascade_df1_f32(const arm_biquad_casd_df1_inst_f32 *S,
 
 static void iir_start_from_fit(void)
 {
-  sweep_uart_puts("IIR_ENTER\r\n");
   if (iir_coeff_valid == 0U)
   {
     sweep_uart_puts("IIR_NO_COEFF\r\n");
@@ -1348,7 +1306,6 @@ static void iir_start_from_fit(void)
   iir_dac_error_count = 0U;
   iir_fmac_error_count = 0U;
   iir_processed_count = 0U;
-  iir_next_debug_count = 4U;
   iir_adc_min = 65535U;
   iir_adc_max = 0U;
   iir_dac_min = 4095U;
@@ -1373,7 +1330,6 @@ static void iir_start_from_fit(void)
   }
 #endif
 
-  sweep_uart_puts("IIR_STAGE,BUF_OK\r\n");
   if (hdma_adc1.Init.Mode != DMA_CIRCULAR)
   {
     (void)HAL_DMA_DeInit(&hdma_adc1);
@@ -1405,7 +1361,6 @@ static void iir_start_from_fit(void)
   MODIFY_REG(hadc1.Instance->CFGR, ADC_CFGR_OVRMOD, ADC_OVR_DATA_OVERWRITTEN);
   iir_running = 1U;
 
-  sweep_uart_puts("IIR_STAGE,ADC_START\r\n");
   if (HAL_ADC_Start_DMA(&hadc1, (uint32_t *)iir_adc_buf, IIR_DMA_SAMPLES) != HAL_OK)
   {
     iir_running = 0U;
@@ -1414,7 +1369,6 @@ static void iir_start_from_fit(void)
     sweep_uart_puts("\r\n");
     return;
   }
-  sweep_uart_puts("IIR_STAGE,DAC_START\r\n");
   if (HAL_DAC_Start_DMA(&hdac1, DAC_CHANNEL_1, (uint32_t *)iir_dac_buf, IIR_DMA_SAMPLES, DAC_ALIGN_12B_R) != HAL_OK)
   {
     iir_running = 0U;
@@ -1423,38 +1377,12 @@ static void iir_start_from_fit(void)
   }
   __HAL_TIM_SET_COUNTER(&htim2, 0U);
   __HAL_TIM_CLEAR_FLAG(&htim2, TIM_FLAG_UPDATE);
-  sweep_uart_puts("IIR_STAGE,TIM_START\r\n");
   if (HAL_TIM_Base_Start(&htim2) != HAL_OK)
   {
     iir_running = 0U;
     sweep_uart_puts("IIR_FAIL,TIM_START\r\n");
     return;
   }
-
-  sweep_uart_puts("IIR_START,Fs,");
-  sweep_uart_print_uint(IIR_SAMPLE_RATE_HZ);
-  sweep_uart_puts(",block,");
-  sweep_uart_print_uint(IIR_BLOCK_SAMPLES);
-  sweep_uart_puts("\r\n");
-#if (IIR_DEBUG_ADC_TO_DAC != 0U)
-  sweep_uart_puts("IIR_MODE,ADC_TO_DAC_DEBUG\r\n");
-#elif (IIR_USE_FMAC != 0U)
-  sweep_uart_puts("IIR_MODE,FMAC_IIR_FIXED\r\n");
-#else
-  sweep_uart_puts("IIR_MODE,SOFTWARE_IIR_FIXED\r\n");
-#endif
-
-  sweep_uart_puts("IIR_DAC_STATE,cr,");
-  sweep_uart_print_uint((uint32_t)DAC1->CR);
-  sweep_uart_puts(",sr,");
-  sweep_uart_print_uint((uint32_t)DAC1->SR);
-  sweep_uart_puts(",dhr,");
-  sweep_uart_print_uint((uint32_t)(DAC1->DHR12R1 & 0x0FFFU));
-  sweep_uart_puts(",dor,");
-  sweep_uart_print_uint((uint32_t)(DAC1->DOR1 & 0x0FFFU));
-  sweep_uart_puts(",ndtr,");
-  sweep_uart_print_uint((uint32_t)__HAL_DMA_GET_COUNTER(&hdma_dac1_ch1));
-  sweep_uart_puts("\r\n");
 }
 
 static void iir_process_pending(void)
@@ -1768,46 +1696,6 @@ static void iir_process_block(uint32_t offset)
     iir_dac_max = dac_max;
   }
   iir_processed_count++;
-  iir_debug_report_once();
-}
-
-static void iir_debug_report_once(void)
-{
-  if (iir_processed_count >= iir_next_debug_count)
-  {
-    iir_next_debug_count = iir_processed_count + IIR_DEBUG_REPORT_BLOCKS;
-    sweep_uart_puts("IIR_DBG,half,");
-    sweep_uart_print_uint(iir_half_irq_count);
-    sweep_uart_puts(",full,");
-    sweep_uart_print_uint(iir_full_irq_count);
-    sweep_uart_puts(",dac_half,");
-    sweep_uart_print_uint(iir_dac_half_irq_count);
-    sweep_uart_puts(",dac_full,");
-    sweep_uart_print_uint(iir_dac_full_irq_count);
-    sweep_uart_puts(",dac_err,");
-    sweep_uart_print_uint(iir_dac_error_count);
-    sweep_uart_puts(",fmac_err,");
-    sweep_uart_print_uint(iir_fmac_error_count);
-    sweep_uart_puts(",proc,");
-    sweep_uart_print_uint(iir_processed_count);
-    sweep_uart_puts(",adc_min,");
-    sweep_uart_print_uint(iir_adc_min);
-    sweep_uart_puts(",adc_max,");
-    sweep_uart_print_uint(iir_adc_max);
-    sweep_uart_puts(",dac_min,");
-    sweep_uart_print_uint(iir_dac_min);
-    sweep_uart_puts(",dac_max,");
-    sweep_uart_print_uint(iir_dac_max);
-    sweep_uart_puts(",sr,");
-    sweep_uart_print_uint((uint32_t)DAC1->SR);
-    sweep_uart_puts(",dhr,");
-    sweep_uart_print_uint((uint32_t)(DAC1->DHR12R1 & 0x0FFFU));
-    sweep_uart_puts(",dor,");
-    sweep_uart_print_uint((uint32_t)(DAC1->DOR1 & 0x0FFFU));
-    sweep_uart_puts(",ndtr,");
-    sweep_uart_print_uint((uint32_t)__HAL_DMA_GET_COUNTER(&hdma_dac1_ch1));
-    sweep_uart_puts("\r\n");
-  }
 }
 
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)

@@ -68,7 +68,7 @@
 #define FIT_MODEL_HIGHPASS         (2U)
 #define UART1_CMD_START2           "Start_2"
 #define UART1_CMD_START2_LEN       (7U)
-#define IIR_SAMPLE_RATE_HZ         (1000000U)
+#define IIR_SAMPLE_RATE_HZ         (1800000U)
 #define IIR_BLOCK_SAMPLES          (512U)
 #define IIR_DMA_SAMPLES            (IIR_BLOCK_SAMPLES * 2U)
 #define IIR_USE_FMAC               (0U)

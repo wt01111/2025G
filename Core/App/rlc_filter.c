@@ -35,6 +35,7 @@
 #define FIT_MODEL_LOWPASS          (0U)
 #define FIT_MODEL_BANDPASS         (1U)
 #define FIT_MODEL_HIGHPASS         (2U)
+#define FIT_MODEL_BANDSTOP         (3U)
 #define IIR_SAMPLE_RATE_HZ         (1500000U)
 #define IIR_BLOCK_SAMPLES          (512U)
 #define IIR_DMA_SAMPLES            (IIR_BLOCK_SAMPLES * 2U)
@@ -103,37 +104,97 @@ static uint8_t iir_fmac_coeff_clipped;
 extern DMA_HandleTypeDef hdma_adc1;
 extern DMA_HandleTypeDef hdma_dac1_ch1;
 
+/* 执行完整扫频：逐个频点输出正弦、采集 ADC、计算幅相、送屏显示，最后拟合模型。 */
 static void sweep_run_once(void);
+
+/* 准备单个扫频点：停止外设，重配 ADC/DAC DMA 模式，并切回 ADC 一次性采样。 */
 static uint8_t sweep_prepare_point(void);
+
+/* 强制 ADC DMA 使用一次性采样：写 HAL 配置和寄存器，再读回确认配置生效。 */
 static uint8_t sweep_force_adc_dma_oneshot(void);
+
+/* 选择采样记录中的周期数：低频少周期、高频多周期，兼顾频率分辨率和采样稳定性。 */
 static uint32_t sweep_select_cycles(uint32_t target_freq_hz);
+
+/* 配置扫频定时器：根据目标频率和周期数计算采样率，设置 TIM2 自动重装值。 */
 static float sweep_config_timer_for_freq(uint32_t target_freq_hz);
+
+/* 生成 DAC 波形：按当前周期数填充一段余弦表，并限制到 12 位 DAC 输出范围。 */
 static void sweep_make_dac_wave(void);
+
+/* 计算参考幅度：对 DAC 输出波形做同频解调，并换算成等效 ADC 计数用于归一化。 */
 static float sweep_reference_amp_adc_counts(void);
+
+/* 分析采样数据：去除直流均值后做同频正交解调，得到该频点的幅值和相位。 */
 static void sweep_analyze(float *mag, float *phase_deg);
+
+/* 保存扫频点：把频率、幅值和相位写入拟合数组，供后续 RLC 模型搜索使用。 */
 static void sweep_fit_store(float mag, float phase_deg, uint32_t freq_hz);
+
+/* 拟合并输出 RLC 模型：打印低通/带通/高通/带阻候选误差，确定模型、参数和数字滤波系数。 */
 static void sweep_fit_rlc_and_print(void);
+
+/* 计算模型幅值基函数：在给定 f0 和 Q 下，返回指定 RLC 模型的单位增益幅频响应。 */
 static float sweep_rlc_mag_base(uint32_t model, float freq_hz, float f0_hz, float q);
+
+/* 计算模型相位：根据低通、带通、高通或带阻分子相位，减去二阶分母相位得到角度。 */
 static float sweep_rlc_phase_deg(uint32_t model, float freq_hz, float f0_hz, float q);
+
+/* 获取模型名称：把内部模型编号转换成屏幕和调试串口使用的文本。 */
 static const char *sweep_model_text(uint32_t model);
+
+/* 打印模型名称：通过显示模块的调试串口接口输出当前拟合模型文本。 */
 static void sweep_uart_print_model(uint32_t model);
+
+/* 相位展开：通过加减 360 度让当前相位尽量接近上一点，便于拟合延迟斜率。 */
 static float sweep_unwrap_phase(float phase_deg, float last_phase_deg);
+
+/* 启动实时 IIR：检查系数，清状态和缓冲区，配置 DMA/定时器/可选 FMAC，再启动 ADC 和 DAC。 */
 static void iir_start_from_fit(void);
+
+/* 配置实时采样定时器：按 IIR_SAMPLE_RATE_HZ 计算 TIM2 自动重装值并更新计数器。 */
 static void iir_config_timer(void);
+
+/* 生成 IIR 系数：用双线性变换把拟合得到的模拟二阶系统转换成数字双二阶系数。 */
 static uint8_t iir_make_coefficients(void);
+
+/* 处理待处理标志：从中断置位的标志中取出前半/后半缓冲请求，并调用块处理函数。 */
 static void iir_process_pending(void);
+
+/* 处理一个实时数据块：读取 ADC 半缓冲，执行 IIR/FMAC/直通调试路径，再写回 DAC 半缓冲。 */
 static void iir_process_block(uint32_t offset);
+
+/* 对 DAC 码值施加输出增益：以 2048 为中心缩放，并限制到 0..4095。 */
 static uint16_t iir_apply_output_gain(uint16_t sample);
+
+/* 浮点输出转 DAC：把 -1..1 附近的归一化滤波结果映射到 12 位 DAC 码值。 */
 static uint16_t iir_float_to_dac(float value);
+
+/* 浮点系数转 FMAC Q15：将系数限制到 Q1.15 可表示范围，并记录是否发生裁剪。 */
 static int16_t iir_float_to_fmac_q15(float value);
+
+/* 配置 FMAC：把当前 IIR 系数量化后写入 FMAC 配置，设置输入、系数、输出缓冲区。 */
 static uint8_t iir_fmac_configure_from_coefficients(void);
+
+/* 使用 FMAC 处理一块数据：把 ADC 样本转为有符号输入，追加到 FMAC，并轮询取回输出。 */
 static uint8_t iir_fmac_process_block(uint32_t offset);
+
+/* 正弦函数封装：集中调用 sinf，方便后续替换成更快的近似或查表实现。 */
 static float sweep_sinf(float x);
+
+/* 余弦函数封装：集中调用 cosf，生成扫频 DAC 波形和解调用参考信号。 */
 static float sweep_cosf(float x);
+
+/* 平方根近似：先把输入缩放到合适范围，再用牛顿迭代求根，减少对库函数依赖。 */
 static float sweep_sqrtf(float x);
+
+/* 反正切近似：处理正负号和大于 1 的输入，再用有理近似计算角度。 */
 static float sweep_atanf(float x);
+
+/* atan2 近似：根据 x/y 所在象限修正 sweep_atanf 的结果，得到完整相位角。 */
 static float sweep_atan2f(float y, float x);
 
+/* 初始化滤波模块：启动 ADC 单端校准；如果校准失败，进入工程统一的 Error_Handler。 */
 void rlc_filter_init(void)
 {
   if (HAL_ADCEx_Calibration_Start(&hadc1, ADC_CALIB_OFFSET, ADC_SINGLE_ENDED) != HAL_OK)
@@ -142,6 +203,7 @@ void rlc_filter_init(void)
   }
 }
 
+/* 开始学习：如果实时滤波正在运行，先停止 TIM2、ADC DMA、DAC DMA，再打开调试输出并执行扫频。 */
 void rlc_filter_start_learning(void)
 {
   if (iir_running != 0U)
@@ -156,6 +218,7 @@ void rlc_filter_start_learning(void)
   sweep_run_once();
 }
 
+/* 开始实时滤波：先把已识别的滤波类型发到屏幕，再根据拟合系数启动 IIR；启动成功后关闭调试打印。 */
 void rlc_filter_start_realtime(void)
 {
   if (fit_model_valid != 0U)
@@ -171,6 +234,7 @@ void rlc_filter_start_realtime(void)
   }
 }
 
+/* 停止实时滤波：依次停止定时器、ADC DMA 和 DAC DMA，清除处理标志，并重新允许调试输出。 */
 void rlc_filter_stop_realtime(void)
 {
   HAL_TIM_Base_Stop(&htim2);
@@ -181,16 +245,19 @@ void rlc_filter_stop_realtime(void)
   rlc_display_set_debug_enabled(1U);
 }
 
+/* 周期任务：主循环调用它来处理由 ADC DMA 中断设置的待处理半缓冲标志。 */
 void rlc_filter_task(void)
 {
   iir_process_pending();
 }
 
+/* 返回运行状态：直接读取 iir_running，非零表示实时滤波链路已经启动。 */
 uint8_t rlc_filter_is_running(void)
 {
   return iir_running;
 }
 
+/* 配置扫频定时器：先按目标频率选择周期数，再反推采样率和 ARR，最后返回实际采样率。 */
 static float sweep_config_timer_for_freq(uint32_t target_freq_hz)
 {
   uint32_t cycles = sweep_select_cycles(target_freq_hz);
@@ -217,6 +284,7 @@ static float sweep_config_timer_for_freq(uint32_t target_freq_hz)
   return actual_sample_rate;
 }
 
+/* 选择扫频周期数：高频使用更多周期来稳定测量，低频使用较少周期避免记录时间过长。 */
 static uint32_t sweep_select_cycles(uint32_t target_freq_hz)
 {
   if (target_freq_hz >= SWEEP_TOP_BAND_HZ)
@@ -234,6 +302,7 @@ static uint32_t sweep_select_cycles(uint32_t target_freq_hz)
   return SWEEP_HIGH_CYCLES;
 }
 
+/* 生成扫频激励：按当前 sweep_cycles_per_record 计算相位，生成带直流偏置的 DAC 余弦波。 */
 static void sweep_make_dac_wave(void)
 {
   for (uint32_t n = 0; n < SWEEP_SAMPLES; n++)
@@ -254,6 +323,7 @@ static void sweep_make_dac_wave(void)
   }
 }
 
+/* 设置 ADC 一次性 DMA：同步修改 HAL 结构体和硬件寄存器，并检查 DMNGT/OVRMOD 是否写入成功。 */
 static uint8_t sweep_force_adc_dma_oneshot(void)
 {
   hadc1.Init.ConversionDataManagement = ADC_CONVERSIONDATA_DMA_ONESHOT;
@@ -273,6 +343,7 @@ static uint8_t sweep_force_adc_dma_oneshot(void)
   return 1U;
 }
 
+/* 准备扫频采样点：停止外设，ADC DMA 配成 NORMAL，DAC DMA 配成 CIRCULAR，然后绑定回 HAL 句柄。 */
 static uint8_t sweep_prepare_point(void)
 {
   HAL_TIM_Base_Stop(&htim2);
@@ -307,6 +378,7 @@ static uint8_t sweep_prepare_point(void)
   return sweep_force_adc_dma_oneshot();
 }
 
+/* 计算参考幅度：对 DAC 波形做余弦/正弦投影，得到激励基波幅度，并换算为 ADC 满量程计数。 */
 static float sweep_reference_amp_adc_counts(void)
 {
   float ref_re = 0.0f;
@@ -324,6 +396,7 @@ static float sweep_reference_amp_adc_counts(void)
           (float)SWEEP_SAMPLES) * SWEEP_ADC_FULL_SCALE / SWEEP_DAC_FULL_SCALE;
 }
 
+/* 分析 ADC 记录：跳过前面的稳定段，对最后一段采样去均值并做正交解调，输出幅值和相位。 */
 static void sweep_analyze(float *mag, float *phase_deg)
 {
   uint32_t sum = 0U;
@@ -358,6 +431,7 @@ static void sweep_analyze(float *mag, float *phase_deg)
   *phase_deg = sweep_atan2f(im, re) * 180.0f / PI_F;
 }
 
+/* 执行扫频主流程：从起始频率按步进扫描到终止频率，每个频点配置定时器、启动 ADC/DAC、等待完成、分析并保存结果。 */
 static void sweep_run_once(void)
 {
   uint32_t last_freq_hz = 0U;
@@ -468,6 +542,7 @@ static void sweep_run_once(void)
   sweep_fit_rlc_and_print();
 }
 
+/* 保存拟合样本：如果数组未满，就按当前 fit_count 写入频率、幅值、相位并递增计数。 */
 static void sweep_fit_store(float mag, float phase_deg, uint32_t freq_hz)
 {
   if (fit_count >= SWEEP_MAX_POINTS)
@@ -481,6 +556,7 @@ static void sweep_fit_store(float mag, float phase_deg, uint32_t freq_hz)
   fit_count++;
 }
 
+/* 计算 RLC 幅频基函数：根据模型类型选择低通、高通、带通或带阻分子，再除以二阶分母模值。 */
 static float sweep_rlc_mag_base(uint32_t model, float freq_hz, float f0_hz, float q)
 {
   float w = 2.0f * PI_F * freq_hz;
@@ -504,9 +580,14 @@ static float sweep_rlc_mag_base(uint32_t model, float freq_hz, float f0_hz, floa
   {
     return (w * w) / den;
   }
+  if (model == FIT_MODEL_BANDSTOP)
+  {
+    return ((real >= 0.0f) ? real : -real) / den;
+  }
   return imag / den;
 }
 
+/* 计算 RLC 相频响应：先确定分子相位，再减去分母 atan2 得到的相位，返回角度值。 */
 static float sweep_rlc_phase_deg(uint32_t model, float freq_hz, float f0_hz, float q)
 {
   float w = 2.0f * PI_F * freq_hz;
@@ -524,10 +605,15 @@ static float sweep_rlc_phase_deg(uint32_t model, float freq_hz, float f0_hz, flo
   {
     num_phase_deg = 180.0f;
   }
+  else if (model == FIT_MODEL_BANDSTOP)
+  {
+    num_phase_deg = (real >= 0.0f) ? 0.0f : 180.0f;
+  }
 
   return num_phase_deg - (sweep_atan2f(imag, real) * 180.0f / PI_F);
 }
 
+/* 模型编号转文本：低通、带通、高通、带阻分别返回对应的英文显示名。 */
 static const char *sweep_model_text(uint32_t model)
 {
   if (model == FIT_MODEL_LOWPASS)
@@ -538,14 +624,20 @@ static const char *sweep_model_text(uint32_t model)
   {
     return "HIGHPASS";
   }
+  if (model == FIT_MODEL_BANDSTOP)
+  {
+    return "BANDSTOP";
+  }
   return "BANDPASS";
 }
 
+/* 输出模型名称：复用 sweep_model_text 得到字符串，再交给调试串口发送。 */
 static void sweep_uart_print_model(uint32_t model)
 {
   rlc_display_debug_puts(sweep_model_text(model));
 }
 
+/* 相位展开处理：如果相邻相位差超过 180 度，就加/减 360 度消除跳变。 */
 static float sweep_unwrap_phase(float phase_deg, float last_phase_deg)
 {
   while ((phase_deg - last_phase_deg) > 180.0f)
@@ -560,6 +652,7 @@ static float sweep_unwrap_phase(float phase_deg, float last_phase_deg)
   return phase_deg;
 }
 
+/* 拟合 RLC 并打印结果：低通/带通/高通筛掉太小幅值点，带阻保留陷波点；逐个打印候选误差后选择最小者。 */
 static void sweep_fit_rlc_and_print(void)
 {
   float peak_mag = 0.0f;
@@ -593,13 +686,14 @@ static void sweep_fit_rlc_and_print(void)
   best_f0 = fit_freq_hz[fit_count / 2U];
   valid_min_mag = peak_mag * FIT_VALID_MAG_RATIO;
 
-  for (uint32_t model = FIT_MODEL_LOWPASS; model <= FIT_MODEL_HIGHPASS; model++)
+  for (uint32_t model = FIT_MODEL_LOWPASS; model <= FIT_MODEL_BANDSTOP; model++)
   {
     float model_best_f0 = best_f0;
     float model_best_q = 1.0f;
     float model_best_k = peak_mag;
     float model_best_k_at_err = peak_mag;
     float model_best_err = 3.4e38f;
+    uint32_t model_best_used = 0U;
 
     for (uint32_t pass = 0; pass < 3U; pass++)
     {
@@ -649,12 +743,13 @@ static void sweep_fit_rlc_and_print(void)
           float k_den = 0.0f;
           float err = 0.0f;
           uint32_t used = 0U;
+          uint32_t err_used = 0U;
 
           for (uint32_t i = 0; i < fit_count; i++)
           {
             float base;
 
-            if (fit_mag[i] < valid_min_mag)
+            if ((model != FIT_MODEL_BANDSTOP) && (fit_mag[i] < valid_min_mag))
             {
               continue;
             }
@@ -679,30 +774,57 @@ static void sweep_fit_rlc_and_print(void)
           {
             float base;
             float pred;
+            float denom;
             float e;
 
-            if (fit_mag[i] < valid_min_mag)
+            if ((model != FIT_MODEL_BANDSTOP) && (fit_mag[i] < valid_min_mag))
             {
               continue;
             }
 
             base = sweep_rlc_mag_base(model, fit_freq_hz[i], f0, q);
             pred = model_best_k * base;
-            e = (pred - fit_mag[i]) / fit_mag[i];
+            denom = fit_mag[i];
+            if (denom < valid_min_mag)
+            {
+              denom = valid_min_mag;
+            }
+            e = (pred - fit_mag[i]) / denom;
             err += e * e;
+            err_used++;
           }
 
-          err /= (float)used;
+          if (err_used < FIT_MIN_POINTS)
+          {
+            continue;
+          }
+
+          err /= (float)err_used;
           if (err < model_best_err)
           {
             model_best_err = err;
             model_best_f0 = f0;
             model_best_q = q;
             model_best_k_at_err = model_best_k;
+            model_best_used = err_used;
           }
         }
       }
     }
+
+    rlc_display_debug_puts("FIT_CANDIDATE,type,");
+    sweep_uart_print_model(model);
+    rlc_display_debug_puts(",K,");
+    rlc_display_debug_print_fixed(model_best_k_at_err, 1000000U);
+    rlc_display_debug_puts(",f0_Hz,");
+    rlc_display_debug_print_fixed(model_best_f0, 100U);
+    rlc_display_debug_puts(",Q,");
+    rlc_display_debug_print_fixed(model_best_q, 10000U);
+    rlc_display_debug_puts(",used,");
+    rlc_display_debug_print_uint(model_best_used);
+    rlc_display_debug_puts(",err,");
+    rlc_display_debug_print_sci(model_best_err);
+    rlc_display_debug_puts("\r\n");
 
     if (model_best_err < best_err)
     {
@@ -777,7 +899,7 @@ static void sweep_fit_rlc_and_print(void)
     rlc_display_debug_puts("\r\n");
 
     rlc_display_debug_puts("FIT_COEFF,Hs=(n2*s^2+n1*s+n0)/(s^2+a*s+b),n2,");
-    if (best_model == FIT_MODEL_HIGHPASS)
+    if ((best_model == FIT_MODEL_HIGHPASS) || (best_model == FIT_MODEL_BANDSTOP))
     {
       fit_n2 = best_k;
       rlc_display_debug_print_sci(best_k);
@@ -799,7 +921,7 @@ static void sweep_fit_rlc_and_print(void)
       rlc_display_debug_print_sci(0.0f);
     }
     rlc_display_debug_puts(",n0,");
-    if (best_model == FIT_MODEL_LOWPASS)
+    if ((best_model == FIT_MODEL_LOWPASS) || (best_model == FIT_MODEL_BANDSTOP))
     {
       fit_n0 = best_k * b;
       rlc_display_debug_print_sci(best_k * b);
@@ -840,6 +962,7 @@ static void sweep_fit_rlc_and_print(void)
   }
 }
 
+/* 配置实时滤波采样率：用固定 IIR_SAMPLE_RATE_HZ 计算 TIM2 的 ARR，并触发更新事件。 */
 static void iir_config_timer(void)
 {
   uint32_t arr = (uint32_t)((SWEEP_TIM2_CLOCK_HZ / (float)IIR_SAMPLE_RATE_HZ) + 0.5f);
@@ -860,6 +983,7 @@ static void iir_config_timer(void)
   htim2.Instance->EGR = TIM_EGR_UG;
 }
 
+/* 生成数字滤波系数：读取拟合出的 n2/n1/n0/a/b，使用双线性变换计算 b0/b1/b2/a1/a2 并初始化 CMSIS biquad。 */
 static uint8_t iir_make_coefficients(void)
 {
   float c = 2.0f * (float)IIR_SAMPLE_RATE_HZ;
@@ -910,6 +1034,7 @@ static uint8_t iir_make_coefficients(void)
   return 1U;
 }
 
+/* CMSIS-DSP 初始化弱实现：当库中没有强定义时，设置级数、系数、状态指针并清零状态数组。 */
 __WEAK void arm_biquad_cascade_df1_init_f32(arm_biquad_casd_df1_inst_f32 *S,
                                             uint8_t numStages,
                                             const float32_t *pCoeffs,
@@ -925,6 +1050,7 @@ __WEAK void arm_biquad_cascade_df1_init_f32(arm_biquad_casd_df1_inst_f32 *S,
   }
 }
 
+/* CMSIS-DSP 滤波弱实现：当库函数不可用时，用直接 I 型结构逐点计算 biquad 输出并更新状态。 */
 __WEAK void arm_biquad_cascade_df1_f32(const arm_biquad_casd_df1_inst_f32 *S,
                                        const float32_t *pSrc,
                                        float32_t *pDst,
@@ -964,6 +1090,7 @@ __WEAK void arm_biquad_cascade_df1_f32(const arm_biquad_casd_df1_inst_f32 *S,
   }
 }
 
+/* 启动实时 IIR 链路：检查系数有效性，复位状态和统计量，初始化 ADC/DAC 缓冲，配置 DMA、定时器和可选 FMAC，最后启动外设。 */
 static void iir_start_from_fit(void)
 {
   if (iir_coeff_valid == 0U)
@@ -1073,6 +1200,7 @@ static void iir_start_from_fit(void)
   }
 }
 
+/* 处理待滤波数据块：在临界区读取 flags，优先处理前半缓冲，再处理后半缓冲，避免中断和主循环抢同一标志。 */
 static void iir_process_pending(void)
 {
   uint8_t flags;
@@ -1104,6 +1232,7 @@ static void iir_process_pending(void)
   __enable_irq();
 }
 
+/* 应用输出增益：以 DAC 中点 2048 为零点缩放波形幅度，随后裁剪到 12 位范围。 */
 static uint16_t iir_apply_output_gain(uint16_t sample)
 {
   float dac = 2048.0f + (((float)sample - 2048.0f) * IIR_OUTPUT_GAIN);
@@ -1120,6 +1249,7 @@ static uint16_t iir_apply_output_gain(uint16_t sample)
   return (uint16_t)(dac + 0.5f);
 }
 
+/* 浮点样本转 DAC：把归一化浮点值乘以 2047 和输出增益，再加中点并裁剪。 */
 static uint16_t iir_float_to_dac(float value)
 {
   float dac = 2048.0f + (value * 2047.0f * IIR_OUTPUT_GAIN);
@@ -1136,6 +1266,7 @@ static uint16_t iir_float_to_dac(float value)
   return (uint16_t)(dac + 0.5f);
 }
 
+/* FMAC 系数量化：把浮点数限制到 Q15 范围，按正负分别四舍五入，并标记是否发生裁剪。 */
 static int16_t iir_float_to_fmac_q15(float value)
 {
   if (value > 0.9999695f)
@@ -1156,6 +1287,7 @@ static int16_t iir_float_to_fmac_q15(float value)
   return (int16_t)((value * 32768.0f) - 0.5f);
 }
 
+/* 配置硬件 FMAC：先量化 b/a 系数，重启 FMAC，再设置输入、系数和输出缓冲区以及 IIR 直接 I 型参数。 */
 static uint8_t iir_fmac_configure_from_coefficients(void)
 {
   FMAC_FilterConfigTypeDef config = {0};
@@ -1223,6 +1355,7 @@ static uint8_t iir_fmac_configure_from_coefficients(void)
   return 1U;
 }
 
+/* FMAC 块处理：把 ADC 半缓冲转为有符号输入，配置输出缓冲，追加输入数据并轮询等待完整输出。 */
 static uint8_t iir_fmac_process_block(uint32_t offset)
 {
   uint16_t input_size = IIR_BLOCK_SAMPLES;
@@ -1258,6 +1391,7 @@ static uint8_t iir_fmac_process_block(uint32_t offset)
   return 1U;
 }
 
+/* 实时数据块处理：失效 ADC 缓存，转换为归一化浮点，执行调试直通、FMAC 或 CMSIS IIR 路径，写入 DAC 缓冲并清理缓存。 */
 static void iir_process_block(uint32_t offset)
 {
   uint16_t adc_min = 65535U;
@@ -1404,6 +1538,7 @@ static void iir_process_block(uint32_t offset)
   iir_processed_count++;
 }
 
+/* ADC 全缓冲完成：实时模式下设置后半缓冲处理标志并检测过载；扫频模式下置 adc_done 表示采样结束。 */
 void rlc_filter_adc_conv_cplt_callback(ADC_HandleTypeDef *hadc)
 {
   if (hadc->Instance == ADC1)
@@ -1424,6 +1559,7 @@ void rlc_filter_adc_conv_cplt_callback(ADC_HandleTypeDef *hadc)
   }
 }
 
+/* ADC 半缓冲完成：实时模式下设置前半缓冲处理标志，如果上一块还没处理完则记录 overrun。 */
 void rlc_filter_adc_conv_half_cplt_callback(ADC_HandleTypeDef *hadc)
 {
   if ((hadc->Instance == ADC1) && (iir_running != 0U))
@@ -1437,6 +1573,7 @@ void rlc_filter_adc_conv_half_cplt_callback(ADC_HandleTypeDef *hadc)
   }
 }
 
+/* ADC 错误处理：确认是 ADC1 后置位 adc_error，扫频等待循环会打印错误并跳过当前频点。 */
 void rlc_filter_adc_error_callback(ADC_HandleTypeDef *hadc)
 {
   if (hadc->Instance == ADC1)
@@ -1445,6 +1582,7 @@ void rlc_filter_adc_error_callback(ADC_HandleTypeDef *hadc)
   }
 }
 
+/* DAC 全缓冲完成：记录 DAC 循环轮数；实时模式下额外累计全缓冲中断次数。 */
 void rlc_filter_dac_conv_cplt_ch1_callback(DAC_HandleTypeDef *hdac)
 {
   if (hdac->Instance == DAC1)
@@ -1457,6 +1595,7 @@ void rlc_filter_dac_conv_cplt_ch1_callback(DAC_HandleTypeDef *hdac)
   }
 }
 
+/* DAC 半缓冲完成：实时模式下累计半缓冲中断次数，用于观察 DAC 输出节拍。 */
 void rlc_filter_dac_conv_half_cplt_ch1_callback(DAC_HandleTypeDef *hdac)
 {
   if ((hdac->Instance == DAC1) && (iir_running != 0U))
@@ -1465,6 +1604,7 @@ void rlc_filter_dac_conv_half_cplt_ch1_callback(DAC_HandleTypeDef *hdac)
   }
 }
 
+/* DAC 错误处理：确认 DAC1 后累计错误次数，并清除通道 1 DMA underrun 标志。 */
 void rlc_filter_dac_error_ch1_callback(DAC_HandleTypeDef *hdac)
 {
   if (hdac->Instance == DAC1)
@@ -1474,16 +1614,19 @@ void rlc_filter_dac_error_ch1_callback(DAC_HandleTypeDef *hdac)
   }
 }
 
+/* 正弦封装：当前直接调用 sinf，保留封装层方便在无 FPU 或性能紧张时替换。 */
 static float sweep_sinf(float x)
 {
   return sinf(x);
 }
 
+/* 余弦封装：当前直接调用 cosf，扫频波形生成和解调参考信号都通过这里计算。 */
 static float sweep_cosf(float x)
 {
   return cosf(x);
 }
 
+/* 平方根近似：对输入做范围归一化后进行多次牛顿迭代，最后恢复缩放比例。 */
 static float sweep_sqrtf(float x)
 {
   float normalized;
@@ -1517,6 +1660,7 @@ static float sweep_sqrtf(float x)
   return y * scale;
 }
 
+/* 反正切近似：先处理符号和倒数变换，再用 x/(1+0.280872*x*x) 近似 atan。 */
 static float sweep_atanf(float x)
 {
   float sign = 1.0f;
@@ -1535,6 +1679,7 @@ static float sweep_atanf(float x)
   return sign * (x / (1.0f + (0.280872f * x * x)));
 }
 
+/* atan2 近似：根据 x、y 的符号选择象限，把 sweep_atanf 的主值修正为完整相位。 */
 static float sweep_atan2f(float y, float x)
 {
   if (x > 0.0f)

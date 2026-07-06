@@ -3,7 +3,7 @@
 <title>Static Call Graph - [2025G\2025G.axf]</title></head>
 <body><HR>
 <H1>Static Call Graph for image 2025G\2025G.axf</H1><HR>
-<BR><P>#&#060CALLGRAPH&#062# ARM Linker, 6240002: Last Updated: Sun Jul  5 23:49:23 2026
+<BR><P>#&#060CALLGRAPH&#062# ARM Linker, 6240002: Last Updated: Mon Jul  6 14:14:58 2026
 <BR><P>
 <H3>Maximum Stack Usage =        384 bytes + Unknown(Cycles, Untraceable Function Pointers)</H3><H3>
 Call chain for Maximum Stack Depth:</H3>
@@ -1354,9 +1354,9 @@ Global Symbols
 <BR>[Calls]<UL><LI><a href="#[f4]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;rlc_display_uart_error_callback
 </UL>
 <BR>[Called By]<UL><LI><a href="#[f5]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;HAL_UART_IRQHandler
+<LI><a href="#[a0]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;UART_DMAAbortOnError
 <LI><a href="#[a4]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;UART_RxISR_16BIT_FIFOEN
 <LI><a href="#[a3]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;UART_RxISR_8BIT_FIFOEN
-<LI><a href="#[a0]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;UART_DMAAbortOnError
 </UL>
 
 <P><STRONG><a name="[f5]"></a>HAL_UART_IRQHandler</STRONG> (Thumb, 1674 bytes, Stack size 16 bytes, stm32h7xx_hal_uart.o(.text.HAL_UART_IRQHandler))
@@ -1827,7 +1827,7 @@ Global Symbols
 <BR><BR>[Called By]<UL><LI><a href="#[121]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;rlc_app_task
 </UL>
 
-<P><STRONG><a name="[127]"></a>rlc_filter_start_learning</STRONG> (Thumb, 8144 bytes, Stack size 128 bytes, rlc_filter.o(.text.rlc_filter_start_learning))
+<P><STRONG><a name="[127]"></a>rlc_filter_start_learning</STRONG> (Thumb, 9476 bytes, Stack size 128 bytes, rlc_filter.o(.text.rlc_filter_start_learning))
 <BR><BR>[Stack]<UL><LI>Max Depth = 256<LI>Call Chain = rlc_filter_start_learning &rArr; rlc_display_debug_print_sci &rArr; rlc_display_debug_print_fixed &rArr; HAL_UART_Transmit
 </UL>
 <BR>[Calls]<UL><LI><a href="#[119]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;arm_biquad_cascade_df1_init_f32
@@ -1858,7 +1858,7 @@ Global Symbols
 <BR>[Called By]<UL><LI><a href="#[121]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;rlc_app_task
 </UL>
 
-<P><STRONG><a name="[129]"></a>rlc_filter_start_realtime</STRONG> (Thumb, 1556 bytes, Stack size 32 bytes, rlc_filter.o(.text.rlc_filter_start_realtime))
+<P><STRONG><a name="[129]"></a>rlc_filter_start_realtime</STRONG> (Thumb, 1548 bytes, Stack size 32 bytes, rlc_filter.o(.text.rlc_filter_start_realtime))
 <BR><BR>[Stack]<UL><LI>Max Depth = 96<LI>Call Chain = rlc_filter_start_realtime &rArr; rlc_display_debug_print_uint &rArr; HAL_UART_Transmit
 </UL>
 <BR>[Calls]<UL><LI><a href="#[119]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;arm_biquad_cascade_df1_init_f32

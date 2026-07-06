@@ -25,16 +25,34 @@ static volatile uint8_t debug_enabled = 1U;
 static uint32_t curve_sent_count;
 static uint32_t curve_total_points;
 
+/* 计算字符串长度：逐字节查找 '\0'，这样发送串口时不需要依赖标准库 strlen。 */
 static uint32_t text_len(const char *text);
+
+/* 向屏幕串口发送原始命令片段：只发文本本体，不自动补 Nextion 结束符。 */
 static void screen_send_raw(const char *text);
+
+/* 发送 Nextion 命令结束符：每条屏幕命令后必须补三个 0xFF 字节。 */
 static void screen_send_end(void);
+
+/* 向屏幕串口发送无符号十进制数字：手动拆分数字，避免使用 printf。 */
 static void screen_send_uint(uint32_t value);
+
+/* 向屏幕曲线控件发送一个点：先限制到 0..127，再拼出 add 命令并补结束符。 */
 static void screen_send_curve(uint32_t channel, uint32_t value);
+
+/* 幅值缩放函数：先把线性幅值转为 dB，再裁剪到显示范围并映射到 0..127。 */
 static uint32_t screen_scale_mag(float mag);
+
+/* 相位缩放函数：先把角度规整到 -180..180 度，再映射到屏幕曲线的 0..127。 */
 static uint32_t screen_scale_phase(float phase_deg);
+
+/* 曲线抽点判断：根据当前频点序号和总点数，决定是否发送到屏幕，避免超过 320 点上限。 */
 static uint8_t screen_curve_point_allowed(uint32_t point_index, uint32_t total_points);
+
+/* 屏幕命令匹配：逐字节匹配 start_learn 和 start_filter，匹配成功后置位对应请求标志。 */
 static void screen_match_byte(uint8_t value);
 
+/* 初始化显示通信：清空命令匹配状态和请求标志，分别复位 USART1/USART3 接收，再开启单字节中断接收。 */
 void rlc_display_init(void)
 {
   uart1_start2_match = 0U;
@@ -59,6 +77,7 @@ void rlc_display_init(void)
   (void)HAL_UART_Receive_IT(&huart3, &screen_rx_byte, 1U);
 }
 
+/* 读取“开始学习”请求：关中断保护共享标志，取出后立即清零，防止同一条命令被重复执行。 */
 uint8_t rlc_display_take_start_learn(void)
 {
   uint8_t requested;
@@ -71,6 +90,7 @@ uint8_t rlc_display_take_start_learn(void)
   return requested;
 }
 
+/* 读取“开始滤波”请求：用临界区保护标志位，返回本次是否收到启动实时滤波命令。 */
 uint8_t rlc_display_take_start_filter(void)
 {
   uint8_t requested;
@@ -83,17 +103,20 @@ uint8_t rlc_display_take_start_filter(void)
   return requested;
 }
 
+/* 设置调试输出开关：enabled 非零时允许发送调试信息，为 0 时所有调试打印函数直接返回。 */
 void rlc_display_set_debug_enabled(uint8_t enabled)
 {
   debug_enabled = enabled;
 }
 
+/* 开始一轮频谱显示：清空已发送点计数，并保存总频点数供后续抽点计算使用。 */
 void rlc_display_spectrum_begin(uint32_t total_points)
 {
   curve_sent_count = 0U;
   curve_total_points = total_points;
 }
 
+/* 发送频谱点到屏幕：若该点通过抽点判断，就分别把幅值和相位缩放后送入两个曲线通道。 */
 void rlc_display_send_spectrum_point(uint32_t point_index, uint32_t total_points,
                                      float mag, float phase_deg)
 {
@@ -110,6 +133,7 @@ void rlc_display_send_spectrum_point(uint32_t point_index, uint32_t total_points
   screen_send_curve(1U, screen_scale_phase(phase_deg));
 }
 
+/* 更新滤波器类型显示：拼接 Nextion 文本赋值命令 t0.txt="..."，最后发送结束符。 */
 void rlc_display_send_filter_type(const char *type_text)
 {
   screen_send_raw("t0.txt=\"");
@@ -118,6 +142,7 @@ void rlc_display_send_filter_type(const char *type_text)
   screen_send_end();
 }
 
+/* 调试字符串输出：先检查 debug_enabled，允许输出时按字符串长度阻塞发送到 USART1。 */
 void rlc_display_debug_puts(const char *text)
 {
   if (debug_enabled == 0U)
@@ -127,6 +152,7 @@ void rlc_display_debug_puts(const char *text)
   HAL_UART_Transmit(&huart1, (uint8_t *)text, (uint16_t)text_len(text), HAL_MAX_DELAY);
 }
 
+/* 调试整数输出：把整数反向拆成十进制字符，再倒序逐字节发出；0 单独处理。 */
 void rlc_display_debug_print_uint(uint32_t value)
 {
   char text[11];
@@ -155,6 +181,7 @@ void rlc_display_debug_print_uint(uint32_t value)
   }
 }
 
+/* 调试定点数输出：先按 scale 放大并四舍五入，再分别打印整数部分和补零后的小数部分。 */
 void rlc_display_debug_print_fixed(float value, uint32_t scale)
 {
   int32_t scaled;
@@ -188,6 +215,7 @@ void rlc_display_debug_print_fixed(float value, uint32_t scale)
   }
 }
 
+/* 调试科学计数法输出：把数值归一化到 1..10，记录指数，再输出尾数和 e+/- 指数。 */
 void rlc_display_debug_print_sci(float value)
 {
   int32_t exp = 0;
@@ -231,6 +259,7 @@ void rlc_display_debug_print_sci(float value)
   }
 }
 
+/* UART 接收完成处理：USART1 匹配 Start_2 启动滤波；USART3 回显字节并匹配屏幕命令，然后继续接收下一字节。 */
 void rlc_display_uart_rx_cplt_callback(UART_HandleTypeDef *huart)
 {
   if (huart->Instance == USART1)
@@ -261,6 +290,7 @@ void rlc_display_uart_rx_cplt_callback(UART_HandleTypeDef *huart)
   }
 }
 
+/* UART 错误恢复：按实际出错串口清错误标志、刷新接收数据，并重新挂起单字节接收中断。 */
 void rlc_display_uart_error_callback(UART_HandleTypeDef *huart)
 {
   if (huart->Instance == USART1)
@@ -277,6 +307,7 @@ void rlc_display_uart_error_callback(UART_HandleTypeDef *huart)
   }
 }
 
+/* 计算字符串长度：从第 0 个字符开始遍历，直到遇到字符串结束符 '\0'。 */
 static uint32_t text_len(const char *text)
 {
   uint32_t len = 0U;
@@ -289,11 +320,13 @@ static uint32_t text_len(const char *text)
   return len;
 }
 
+/* 发送屏幕原始文本：把字符串转换为字节流，通过 USART3 阻塞发送给屏幕。 */
 static void screen_send_raw(const char *text)
 {
   HAL_UART_Transmit(&huart3, (uint8_t *)text, (uint16_t)text_len(text), HAL_MAX_DELAY);
 }
 
+/* 发送屏幕命令结束符：Nextion 协议要求命令尾部固定追加 FF FF FF。 */
 static void screen_send_end(void)
 {
   static const uint8_t end_bytes[3] = {0xFFU, 0xFFU, 0xFFU};
@@ -301,6 +334,7 @@ static void screen_send_end(void)
   HAL_UART_Transmit(&huart3, (uint8_t *)end_bytes, sizeof(end_bytes), HAL_MAX_DELAY);
 }
 
+/* 发送屏幕数字参数：将 uint32_t 拆成十进制 ASCII 字符，按正常顺序发送。 */
 static void screen_send_uint(uint32_t value)
 {
   char text[11];
@@ -325,6 +359,7 @@ static void screen_send_uint(uint32_t value)
   }
 }
 
+/* 发送曲线点：限制曲线值上限，拼出 add 3,channel,value 命令并发给 Nextion。 */
 static void screen_send_curve(uint32_t channel, uint32_t value)
 {
   if (value > SCREEN_CURVE_MAX_VALUE)
@@ -339,6 +374,7 @@ static void screen_send_curve(uint32_t channel, uint32_t value)
   screen_send_end();
 }
 
+/* 判断是否发送当前点：把原始频点均匀压缩到屏幕 320 点容量内，达到目标序号时才放行。 */
 static uint8_t screen_curve_point_allowed(uint32_t point_index, uint32_t total_points)
 {
   uint32_t target_sent;
@@ -370,6 +406,7 @@ static uint8_t screen_curve_point_allowed(uint32_t point_index, uint32_t total_p
   return 0U;
 }
 
+/* 幅值映射：对幅值取 20log10，限制在 -40dB 到 0dB，再线性映射为屏幕曲线数值。 */
 static uint32_t screen_scale_mag(float mag)
 {
   float db;
@@ -407,6 +444,7 @@ static uint32_t screen_scale_mag(float mag)
   return (uint32_t)(scaled + 0.5f);
 }
 
+/* 相位映射：通过加减 360 度消除越界，再把 -180..180 度线性变为 0..127。 */
 static uint32_t screen_scale_phase(float phase_deg)
 {
   float scaled;
@@ -433,6 +471,7 @@ static uint32_t screen_scale_phase(float phase_deg)
   return (uint32_t)(scaled + 0.5f);
 }
 
+/* 命令字节匹配：分别维护学习和滤波命令的匹配位置，连续匹配完整字符串后置位请求。 */
 static void screen_match_byte(uint8_t value)
 {
   const char *learn = SCREEN_CMD_LEARN;
